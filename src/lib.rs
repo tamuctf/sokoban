@@ -3,8 +3,19 @@ pub mod error;
 use std::fmt::{Debug, Formatter, Write};
 use std::ops::Index;
 use crate::error::{SokobanError, SokobanResult};
+#[cfg(feature = "fuzzing")]
+use arbitrary::Arbitrary;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
+#[cfg(not(feature = "fuzzing"))]
+pub enum Block {
+    Crate,
+    Floor,
+    Wall,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Arbitrary)]
+#[cfg(feature = "fuzzing")]
 pub enum Block {
     Crate,
     Floor,
@@ -22,6 +33,16 @@ impl Debug for Block {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
+#[cfg(not(feature = "fuzzing"))]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Arbitrary)]
+#[cfg(feature = "fuzzing")]
 pub enum Direction {
     Up,
     Down,
@@ -62,12 +83,23 @@ pub struct State {
 }
 
 impl State {
-    #[inline]
-    fn checked_bounds(&self, pos: (usize, usize)) -> Option<(usize, usize)> {
-        (pos.0 < self.dim_r && pos.1 < self.dim_c).then(|| pos)
+    #[inline(always)]
+    fn checked_bounds(&self, pos: (usize, usize)) -> Option<usize> {
+        if pos.0 < self.dim_r && pos.1 < self.dim_c {
+            self.dim_c.checked_mul(pos.0).and_then(|r| r.checked_add(pos.1))
+        } else {
+            None
+        }
     }
 
     pub fn new(raw: Vec<Block>, player: (usize, usize), targets: Vec<(usize, usize)>, dim_r: usize, dim_c: usize) -> SokobanResult<Self> {
+        if dim_r.checked_mul(dim_c).is_none() {
+            return Err(SokobanError::InvalidBounds {
+                found: usize::MAX,
+                r: dim_r,
+                c: dim_c,
+            });
+        }
         if raw.len() != dim_r * dim_c {
             return Err(SokobanError::InvalidBounds {
                 found: raw.len(),
@@ -77,18 +109,18 @@ impl State {
         }
         let state = State { container: raw, player, targets, moves: 0, dim_r, dim_c };
         let checked_player = state.checked_bounds(state.player);
-        if checked_player.is_none() || state[state.player] != Block::Floor {
+        if checked_player.is_none() || state.container[checked_player.unwrap()] != Block::Floor {
             return Err(SokobanError::InvalidStartingPosition {
-                found: checked_player.map(|pos| state[pos]),
+                found: checked_player.map(|pos| state.container[pos]),
                 r: player.0,
                 c: player.1,
             });
         }
         for target in state.targets.iter().copied() {
             let checked_target = state.checked_bounds(target);
-            if checked_target.is_none() || state[target] == Block::Wall {
+            if checked_target.is_none() || state.container[checked_target.unwrap()] == Block::Wall {
                 return Err(SokobanError::InvalidTargetPosition {
-                    found: checked_target.map(|pos| state[pos]),
+                    found: checked_target.map(|pos| state.container[pos]),
                     r: target.0,
                     c: target.1,
                 });
@@ -97,25 +129,27 @@ impl State {
         Ok(state)
     }
 
-    pub fn solution_state(&self) -> bool {
+    pub fn in_solution_state(&self) -> bool {
         self.targets.iter().copied().all(|target| self[target] == Block::Crate)
     }
 
     pub fn move_player(mut self, direction: Direction) -> SokobanResult<Self> {
-        if let Some(next_pos) = self.checked_bounds(direction.go(self.player)) {
-            match self[next_pos] {
+        let next_pos = direction.go(self.player);
+        if let Some(npi) = self.checked_bounds(next_pos) {
+            match self.container[npi] {
                 Block::Crate => {
-                    let c_next_pos = self.checked_bounds(direction.go(next_pos));
-                    if c_next_pos.is_none() || self[c_next_pos.unwrap()] != Block::Floor {
+                    let c_next_pos = direction.go(next_pos);
+                    let cnpi = self.checked_bounds(c_next_pos);
+                    if cnpi.is_none() || self.container[cnpi.unwrap()] != Block::Floor {
                         return Err(SokobanError::InvalidMoveCrate {
                             last_state: self,
                             r: next_pos.0,
                             c: next_pos.1,
                         });
                     }
-                    let c_next_pos = c_next_pos.unwrap();
-                    self.container[next_pos.1 + self.dim_c * next_pos.0] = Block::Floor;
-                    self.container[c_next_pos.1 + self.dim_c * c_next_pos.0] = Block::Crate;
+                    let cnpi = cnpi.unwrap();
+                    self.container[npi] = Block::Floor;
+                    self.container[cnpi] = Block::Crate;
                 }
                 Block::Wall => {
                     return Err(SokobanError::InvalidMoveWall {
@@ -159,7 +193,7 @@ impl Index<(usize, usize)> for State {
     #[inline(always)]
     fn index(&self, index: (usize, usize)) -> &Self::Output {
         if let Some(index) = self.checked_bounds(index) {
-            &self.container[index.1 + self.dim_c * index.0]
+            &self.container[index]
         } else {
             panic!("Index out of bounds: {:?}", index)
         }
@@ -198,7 +232,7 @@ mod tests {
         #[inline(always)]
         fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
             if let Some(index) = self.checked_bounds(index) {
-                &mut self.container[index.1 + self.dim_c * index.0]
+                &mut self.container[index]
             } else {
                 panic!("Index out of bounds: {:?}", index)
             }
@@ -366,7 +400,7 @@ mod tests {
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         assert!(state.is_ok());
-        assert!(state.unwrap().solution_state());
+        assert!(state.unwrap().in_solution_state());
     }
 
     #[test]
@@ -378,7 +412,7 @@ mod tests {
         ];
         let state = State::new(raw, (1, 1), vec![(1, 1)], 3, 3);
         assert!(state.is_ok());
-        assert!(!state.unwrap().solution_state());
+        assert!(!state.unwrap().in_solution_state());
     }
 
     #[test]
@@ -523,7 +557,7 @@ mod tests {
         }).and_then(|state| {
             state.move_player(Direction::Down)
         }).map(|state| {
-            state.solution_state()
+            state.in_solution_state()
         });
 
         if let Ok(solved) = result {

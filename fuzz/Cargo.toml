@@ -1,0 +1,32 @@
+[package]
+name = "sokoban-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2018"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+
+[dependencies.sokoban]
+path = ".."
+features = ["fuzzing"]
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "invalid_start_state_search"
+path = "fuzz_targets/invalid_start_state_search.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "invalid_moves_search"
+path = "fuzz_targets/invalid_moves_search.rs"
+test = false
+doc = false
