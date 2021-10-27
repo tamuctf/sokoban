@@ -2,7 +2,6 @@
 #![allow(unused_must_use)]
 
 use libfuzzer_sys::fuzz_target;
-use libfuzzer_sys::arbitrary;
 
 use sokoban::{Block, Direction, State};
 use sokoban::error::SokobanResult;
@@ -16,8 +15,9 @@ fn generate_room_with_box() -> SokobanResult<State> {
         raw.iter_mut().skip(i).take(18).for_each(|block| *block = Block::Floor);
     }
     raw[4 + 4 * 20] = Block::Crate;
+    raw[8 + 4 * 20] = Block::Crate;
 
-    State::new(raw, player, vec![(10, 10)], rows, cols)
+    State::new(raw, player, vec![(10, 10), (15, 5)], rows, cols)
 }
 
 fuzz_target!(|data: Vec<Direction>| {
