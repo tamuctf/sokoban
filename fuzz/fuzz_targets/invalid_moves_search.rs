@@ -9,15 +9,15 @@ use sokoban::error::SokobanResult;
 fn generate_room_with_box() -> SokobanResult<State> {
     let rows = 20;
     let cols = 20;
-    let mut raw = vec![Block::Wall; rows * cols];
+    let mut raw = vec![Block::Floor; rows * cols];
     let player = (9, 9);
-    for i in (21..(raw.len() - 20)).step_by(20) {
-        raw.iter_mut().skip(i).take(18).for_each(|block| *block = Block::Floor);
-    }
+    // for i in (21..(raw.len() - 20)).step_by(20) {
+    //     raw.iter_mut().skip(i).take(18).for_each(|block| *block = Block::Floor);
+    // }
     raw[4 + 4 * 20] = Block::Crate;
-    raw[8 + 4 * 20] = Block::Crate;
+    // raw[8 + 4 * 20] = Block::Crate;
 
-    State::new(raw, player, vec![(10, 10), (15, 5)], rows, cols)
+    State::new(raw, player, vec![(10, 10)], rows, cols)
 }
 
 fuzz_target!(|data: Vec<Direction>| {

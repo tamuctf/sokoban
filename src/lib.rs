@@ -3,19 +3,9 @@ pub mod error;
 use std::fmt::{Debug, Formatter, Write};
 use std::ops::Index;
 use crate::error::{SokobanError, SokobanResult};
-#[cfg(feature = "fuzzing")]
-use arbitrary::Arbitrary;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-#[cfg(not(feature = "fuzzing"))]
-pub enum Block {
-    Crate,
-    Floor,
-    Wall,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Arbitrary)]
-#[cfg(feature = "fuzzing")]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum Block {
     Crate,
     Floor,
@@ -33,16 +23,7 @@ impl Debug for Block {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-#[cfg(not(feature = "fuzzing"))]
-pub enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Arbitrary)]
-#[cfg(feature = "fuzzing")]
+#[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum Direction {
     Up,
     Down,
@@ -53,9 +34,9 @@ pub enum Direction {
 impl Direction {
     pub fn go(&self, orig: (usize, usize)) -> (usize, usize) {
         match self {
-            Direction::Up => (orig.0 - 1, orig.1),
+            Direction::Up => (orig.0.wrapping_sub(1), orig.1),
             Direction::Down => (orig.0 + 1, orig.1),
-            Direction::Left => (orig.0, orig.1 - 1),
+            Direction::Left => (orig.0, orig.1.wrapping_sub(1)),
             Direction::Right => (orig.0, orig.1 + 1)
         }
     }
