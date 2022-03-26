@@ -187,7 +187,11 @@ impl Debug for State {
         for (r, chunk) in self.container.chunks(self.dim_c).enumerate() {
             for (c, block) in chunk.iter().enumerate() {
                 if self.player == (r, c) {
-                    f.write_char('x')?;
+                    if self.targets.contains(&(r, c)) {
+                        f.write_char('X')?;
+                    } else {
+                        f.write_char('x')?;
+                    }
                 } else if self.targets.contains(&(r, c)) {
                     if block == &Block::Crate {
                         f.write_char('M')?;
@@ -230,6 +234,19 @@ mod tests {
         raw[13] = Block::Floor;
 
         State::new(raw, player, Vec::new(), rows, cols).unwrap()
+    }
+
+    fn generate_basic_with_targets() -> State {
+        let rows = 5;
+        let cols = 5;
+        let mut raw = vec![Block::Wall; rows * cols];
+        let player = (2, 2);
+        raw[11] = Block::Floor;
+        raw[12] = Block::Floor;
+        raw[13] = Block::Floor;
+        let targets = vec![player];
+
+        State::new(raw, player, targets, rows, cols).unwrap()
     }
 
     fn generate_hallway(width: usize) -> SokobanResult<State> {
@@ -291,6 +308,19 @@ mod tests {
 #####
 #####
 #_x_#
+#####
+#####
+"#);
+    }
+
+    #[test]
+    fn basic_on_target_works() {
+        let state = generate_basic_with_targets();
+        let debug_string = format!("{:?}", state);
+        assert_eq!(debug_string, r#"
+#####
+#####
+#_X_#
 #####
 #####
 "#);
