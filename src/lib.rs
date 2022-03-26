@@ -166,6 +166,14 @@ impl State {
     pub fn cols(&self) -> usize {
         self.dim_c
     }
+
+    pub fn player(&self) -> (usize, usize) {
+        self.player
+    }
+
+    pub fn targets(&self) -> &Vec<(usize, usize)> {
+        &self.targets
+    }
 }
 
 impl Index<(usize, usize)> for State {
