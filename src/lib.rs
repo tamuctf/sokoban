@@ -236,6 +236,7 @@ impl State {
                         targets.push((row, i));
                     }
                     Err('X') | Err('x') => {
+                        raw.push(Block::Floor);
                         if let Some(player) = player {
                             return Err(SokobanError::MultiplePlayers {
                                 first: player,
