@@ -235,6 +235,10 @@ impl State {
                         raw.push(Block::Crate);
                         targets.push((row, i));
                     }
+                    Err('.') => {
+                        raw.push(Block::Floor);
+                        targets.push((row, i));
+                    }
                     Err('X') | Err('x') => {
                         raw.push(Block::Floor);
                         if let Some(player) = player {
