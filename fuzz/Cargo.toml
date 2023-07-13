@@ -30,3 +30,9 @@ name = "invalid_moves_search"
 path = "fuzz_targets/invalid_moves_search.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "parse_unparse_idempotency"
+path = "fuzz_targets/parse_unparse_idempotency.rs"
+test = false
+doc = false

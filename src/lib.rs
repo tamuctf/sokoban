@@ -1,8 +1,9 @@
 pub mod error;
 
-use std::fmt::{Debug, Formatter, Write};
-use std::ops::Index;
 use crate::error::{SokobanError, SokobanResult};
+use std::fmt::{Debug, Formatter, Write};
+use std::io::BufRead;
+use std::ops::Index;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
@@ -17,7 +18,20 @@ impl Debug for Block {
         match self {
             Block::Crate => f.write_char('m'),
             Block::Floor => f.write_char('_'),
-            Block::Wall => f.write_char('#')
+            Block::Wall => f.write_char('#'),
+        }
+    }
+}
+
+impl TryFrom<char> for Block {
+    type Error = char;
+
+    fn try_from(value: char) -> Result<Self, Self::Error> {
+        match value {
+            'm' => Ok(Block::Crate),
+            '_' => Ok(Block::Floor),
+            '#' => Ok(Block::Wall),
+            c => Err(c),
         }
     }
 }
@@ -37,7 +51,7 @@ impl Direction {
             Direction::Up => (orig.0.wrapping_sub(1), orig.1),
             Direction::Down => (orig.0 + 1, orig.1),
             Direction::Left => (orig.0, orig.1.wrapping_sub(1)),
-            Direction::Right => (orig.0, orig.1 + 1)
+            Direction::Right => (orig.0, orig.1 + 1),
         }
     }
 }
@@ -53,7 +67,7 @@ impl Debug for Direction {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct State {
     container: Vec<Block>,
     player: (usize, usize),
@@ -67,13 +81,21 @@ impl State {
     #[inline(always)]
     fn checked_bounds(&self, pos: (usize, usize)) -> Option<usize> {
         if pos.0 < self.dim_r && pos.1 < self.dim_c {
-            self.dim_c.checked_mul(pos.0).and_then(|r| r.checked_add(pos.1))
+            self.dim_c
+                .checked_mul(pos.0)
+                .and_then(|r| r.checked_add(pos.1))
         } else {
             None
         }
     }
 
-    pub fn new(raw: Vec<Block>, player: (usize, usize), targets: Vec<(usize, usize)>, dim_r: usize, dim_c: usize) -> SokobanResult<Self> {
+    pub fn new(
+        raw: Vec<Block>,
+        player: (usize, usize),
+        targets: Vec<(usize, usize)>,
+        dim_r: usize,
+        dim_c: usize,
+    ) -> SokobanResult<Self> {
         if dim_r.checked_mul(dim_c).is_none() {
             return Err(SokobanError::InvalidBounds {
                 found: usize::MAX,
@@ -88,7 +110,14 @@ impl State {
                 c: dim_c,
             });
         }
-        let state = State { container: raw, player, targets, moves: 0, dim_r, dim_c };
+        let state = State {
+            container: raw,
+            player,
+            targets,
+            moves: 0,
+            dim_r,
+            dim_c,
+        };
         let checked_player = state.checked_bounds(state.player);
         if checked_player.is_none() || state.container[checked_player.unwrap()] != Block::Floor {
             return Err(SokobanError::InvalidStartingPosition {
@@ -111,7 +140,10 @@ impl State {
     }
 
     pub fn in_solution_state(&self) -> bool {
-        self.targets.iter().copied().all(|target| self[target] == Block::Crate)
+        self.targets
+            .iter()
+            .copied()
+            .all(|target| self[target] == Block::Crate)
     }
 
     pub fn move_player(mut self, direction: Direction) -> SokobanResult<Self> {
@@ -174,6 +206,64 @@ impl State {
     pub fn targets(&self) -> &Vec<(usize, usize)> {
         &self.targets
     }
+
+    pub fn parse<R: BufRead>(reader: R) -> SokobanResult<Self> {
+        let mut col = 0;
+        let mut row = 0;
+        let mut raw = Vec::new();
+        let mut player = None;
+        let mut targets = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.len() == 0 {
+                continue; // lines may be blank
+            }
+            if col == 0 {
+                col = line.len();
+            } else if col != line.len() {
+                return Err(SokobanError::InconsistentDimensions {
+                    expected: col,
+                    found: line.len(),
+                });
+            }
+
+            raw.reserve(col);
+            for (i, c) in line.char_indices() {
+                match Block::try_from(c) {
+                    Ok(b) => raw.push(b),
+                    Err('M') => {
+                        raw.push(Block::Crate);
+                        targets.push((row, i));
+                    }
+                    Err('X') | Err('x') => {
+                        if let Some(player) = player {
+                            return Err(SokobanError::MultiplePlayers {
+                                first: player,
+                                second: (row, i),
+                            });
+                        }
+                        player = Some((row, i));
+                        if c == 'X' {
+                            targets.push((row, i));
+                        }
+                    }
+                    Err(c) => {
+                        return Err(SokobanError::InvalidChar {
+                            found: c,
+                            pos: (row, i),
+                        })
+                    }
+                }
+            }
+            row += 1;
+        }
+
+        if let Some(player) = player {
+            Self::new(raw, player, targets, row, col)
+        } else {
+            Err(SokobanError::MissingPlayer)
+        }
+    }
 }
 
 impl Index<(usize, usize)> for State {
@@ -218,8 +308,8 @@ impl Debug for State {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::IndexMut;
     use super::*;
+    use std::ops::IndexMut;
 
     impl IndexMut<(usize, usize)> for State {
         #[inline(always)]
@@ -262,7 +352,10 @@ mod tests {
         let cols = width;
         let mut raw = vec![Block::Wall; rows * cols];
         let player = (1, width / 2 - ((width + 1) % 2));
-        raw.iter_mut().skip(width + 1).take(width - 2).for_each(|block| *block = Block::Floor);
+        raw.iter_mut()
+            .skip(width + 1)
+            .take(width - 2)
+            .for_each(|block| *block = Block::Floor);
 
         State::new(raw, player, Vec::new(), rows, cols)
     }
@@ -295,7 +388,10 @@ mod tests {
         let mut raw = vec![Block::Wall; rows * cols];
         let player = (width / 2 - ((width + 1) % 2), width / 2 - ((width + 1) % 2));
         for i in ((width + 1)..(raw.len() - width)).step_by(width) {
-            raw.iter_mut().skip(i).take(width - 2).for_each(|block| *block = Block::Floor);
+            raw.iter_mut()
+                .skip(i)
+                .take(width - 2)
+                .for_each(|block| *block = Block::Floor);
         }
 
         State::new(raw, player, targets, rows, cols)
@@ -303,7 +399,10 @@ mod tests {
 
     fn generate_room_with_box(width: usize, targets: Vec<(usize, usize)>) -> SokobanResult<State> {
         generate_room(width, targets).map(|mut state| {
-            state[(width / 2 - ((width + 1) % 2) - 1, width / 2 - ((width + 1) % 2) + 1)] = Block::Crate;
+            state[(
+                width / 2 - ((width + 1) % 2) - 1,
+                width / 2 - ((width + 1) % 2) + 1,
+            )] = Block::Crate;
             state
         })
     }
@@ -312,26 +411,32 @@ mod tests {
     fn basic_works() {
         let state = generate_basic();
         let debug_string = format!("{:?}", state);
-        assert_eq!(debug_string, r#"
+        assert_eq!(
+            debug_string,
+            r#"
 #####
 #####
 #_x_#
 #####
 #####
-"#);
+"#
+        );
     }
 
     #[test]
     fn basic_on_target_works() {
         let state = generate_basic_with_targets();
         let debug_string = format!("{:?}", state);
-        assert_eq!(debug_string, r#"
+        assert_eq!(
+            debug_string,
+            r#"
 #####
 #####
 #_X_#
 #####
 #####
-"#);
+"#
+        );
     }
 
     #[test]
@@ -373,9 +478,15 @@ mod tests {
     #[test]
     fn invalid_target_wall_doesnt_work() {
         let raw = vec![
-            Block::Wall, Block::Wall, Block::Wall,
-            Block::Wall, Block::Floor, Block::Wall,
-            Block::Wall, Block::Wall, Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Floor,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         if let SokobanError::InvalidTargetPosition { found, r, c } = state.unwrap_err() {
@@ -390,9 +501,15 @@ mod tests {
     #[test]
     fn valid_target_crate_does_work() {
         let raw = vec![
-            Block::Crate, Block::Wall, Block::Wall,
-            Block::Wall, Block::Floor, Block::Wall,
-            Block::Wall, Block::Wall, Block::Wall,
+            Block::Crate,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Floor,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         assert!(state.is_ok());
@@ -413,9 +530,15 @@ mod tests {
     #[test]
     fn basic_solution_state_works() {
         let raw = vec![
-            Block::Crate, Block::Wall, Block::Wall,
-            Block::Wall, Block::Floor, Block::Wall,
-            Block::Wall, Block::Wall, Block::Wall,
+            Block::Crate,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Floor,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         assert!(state.is_ok());
@@ -425,9 +548,15 @@ mod tests {
     #[test]
     fn basic_not_solution_state_works() {
         let raw = vec![
-            Block::Crate, Block::Wall, Block::Wall,
-            Block::Wall, Block::Floor, Block::Wall,
-            Block::Wall, Block::Wall, Block::Wall,
+            Block::Crate,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Floor,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
+            Block::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(1, 1)], 3, 3);
         assert!(state.is_ok());
@@ -436,55 +565,63 @@ mod tests {
 
     #[test]
     fn move_left() {
-        let last = std::iter::repeat(()).take(5).fold(generate_hallway(20), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Left)
-        }));
+        let last = std::iter::repeat(())
+            .take(5)
+            .fold(generate_hallway(20), |state, _| {
+                state.and_then(|state| state.move_player(Direction::Left))
+            });
 
-        assert_eq!(format!("{:?}", last.unwrap()), r#"
+        assert_eq!(
+            format!("{:?}", last.unwrap()),
+            r#"
 ####################
 #___x______________#
 ####################
-"#);
+"#
+        );
     }
 
     #[test]
     fn move_right_with_box() {
-        let last = std::iter::repeat(()).take(5).fold(generate_hallway_with_box(20), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Right)
-        }));
-        let last = std::iter::repeat(()).take(5).fold(last, |state, _| state.and_then(|state| {
-            state.move_player(Direction::Left)
-        }));
+        let last = std::iter::repeat(())
+            .take(5)
+            .fold(generate_hallway_with_box(20), |state, _| {
+                state.and_then(|state| state.move_player(Direction::Right))
+            });
+        let last = std::iter::repeat(()).take(5).fold(last, |state, _| {
+            state.and_then(|state| state.move_player(Direction::Left))
+        });
 
-        assert_eq!(format!("{:?}", last.unwrap()), r#"
+        assert_eq!(
+            format!("{:?}", last.unwrap()),
+            r#"
 ####################
 #________x_____m___#
 ####################
-"#);
+"#
+        );
     }
 
     #[test]
     fn move_up_right_with_box() {
-        let last = std::iter::repeat(()).take(5).fold(generate_room_with_box(20, Vec::new()), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Right)
-                .and_then(|state| {
-                    state.move_player(Direction::Up)
+        let last = std::iter::repeat(()).take(5).fold(
+            generate_room_with_box(20, Vec::new()),
+            |state, _| {
+                state.and_then(|state| {
+                    state
+                        .move_player(Direction::Right)
+                        .and_then(|state| state.move_player(Direction::Up))
+                        .and_then(|state| state.move_player(Direction::Left))
+                        .and_then(|state| state.move_player(Direction::Up))
+                        .and_then(|state| state.move_player(Direction::Right))
+                        .and_then(|state| state.move_player(Direction::Down))
                 })
-                .and_then(|state| {
-                    state.move_player(Direction::Left)
-                })
-                .and_then(|state| {
-                    state.move_player(Direction::Up)
-                })
-                .and_then(|state| {
-                    state.move_player(Direction::Right)
-                })
-                .and_then(|state| {
-                    state.move_player(Direction::Down)
-                })
-        }));
+            },
+        );
 
-        assert_eq!(format!("{:?}", last.unwrap()), r#"
+        assert_eq!(
+            format!("{:?}", last.unwrap()),
+            r#"
 ####################
 #__________________#
 #__________________#
@@ -505,14 +642,17 @@ mod tests {
 #__________________#
 #__________________#
 ####################
-"#);
+"#
+        );
     }
 
     #[test]
     fn hits_wall_and_dies() {
-        let last = std::iter::repeat(()).take(5).fold(generate_hallway(5), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Right)
-        }));
+        let last = std::iter::repeat(())
+            .take(5)
+            .fold(generate_hallway(5), |state, _| {
+                state.and_then(|state| state.move_player(Direction::Right))
+            });
         if let SokobanError::InvalidMoveWall { last_state, r, c } = last.unwrap_err() {
             assert_eq!(last_state.moves(), 1);
             assert_eq!(r, 1);
@@ -524,9 +664,11 @@ mod tests {
 
     #[test]
     fn hits_crate_and_dies() {
-        let last = std::iter::repeat(()).take(5).fold(generate_hallway_with_box(5), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Right)
-        }));
+        let last = std::iter::repeat(())
+            .take(5)
+            .fold(generate_hallway_with_box(5), |state, _| {
+                state.and_then(|state| state.move_player(Direction::Right))
+            });
         if let SokobanError::InvalidMoveCrate { last_state, r, c } = last.unwrap_err() {
             assert_eq!(last_state.moves(), 0);
             assert_eq!(r, 1);
@@ -538,10 +680,18 @@ mod tests {
 
     #[test]
     fn hits_hole_and_dies() {
-        let last = std::iter::repeat(()).take(5).fold(generate_hallway_with_hole(5), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Right)
-        }));
-        if let SokobanError::InvalidMoveOOB { last_state, dir, r, c } = last.unwrap_err() {
+        let last = std::iter::repeat(())
+            .take(5)
+            .fold(generate_hallway_with_hole(5), |state, _| {
+                state.and_then(|state| state.move_player(Direction::Right))
+            });
+        if let SokobanError::InvalidMoveOOB {
+            last_state,
+            dir,
+            r,
+            c,
+        } = last.unwrap_err()
+        {
             assert_eq!(last_state.moves(), 2);
             assert_eq!(dir, Direction::Right);
             assert_eq!(r, 1);
@@ -553,9 +703,11 @@ mod tests {
 
     #[test]
     fn pushes_crate_in_hole_and_dies() {
-        let last = std::iter::repeat(()).take(5).fold(generate_hallway_with_box_and_hole(5), |state, _| state.and_then(|state| {
-            state.move_player(Direction::Right)
-        }));
+        let last = std::iter::repeat(())
+            .take(5)
+            .fold(generate_hallway_with_box_and_hole(5), |state, _| {
+                state.and_then(|state| state.move_player(Direction::Right))
+            });
         if let SokobanError::InvalidMoveCrate { last_state, r, c } = last.unwrap_err() {
             assert_eq!(last_state.moves(), 1);
             assert_eq!(r, 1);
@@ -567,17 +719,12 @@ mod tests {
 
     #[test]
     fn pushes_crate_to_target() {
-        let result = generate_room_with_box(10, vec![(4, 5)]).and_then(|state| {
-            state.move_player(Direction::Up)
-        }).and_then(|state| {
-            state.move_player(Direction::Up)
-        }).and_then(|state| {
-            state.move_player(Direction::Right)
-        }).and_then(|state| {
-            state.move_player(Direction::Down)
-        }).map(|state| {
-            state.in_solution_state()
-        });
+        let result = generate_room_with_box(10, vec![(4, 5)])
+            .and_then(|state| state.move_player(Direction::Up))
+            .and_then(|state| state.move_player(Direction::Up))
+            .and_then(|state| state.move_player(Direction::Right))
+            .and_then(|state| state.move_player(Direction::Down))
+            .map(|state| state.in_solution_state());
 
         if let Ok(solved) = result {
             assert!(solved);
