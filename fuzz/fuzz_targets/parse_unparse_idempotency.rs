@@ -4,11 +4,11 @@
 use libfuzzer_sys::arbitrary;
 use libfuzzer_sys::fuzz_target;
 
-use sokoban::{Block, State};
+use sokoban::{State, Tile};
 
 #[derive(arbitrary::Arbitrary, Clone, Debug)]
 struct FuzzData {
-    container: Vec<Block>,
+    container: Vec<Tile>,
     player: (u8, u8),
     targets: Vec<(u8, u8)>,
     dim_r: u8,
