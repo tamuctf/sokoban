@@ -11,7 +11,7 @@ use std::fmt::{Debug, Formatter, Write};
 use std::hash::{Hash, Hasher};
 use std::io::BufRead;
 use std::iter::Enumerate;
-use std::ops::Index;
+use std::ops::{Index, IndexMut};
 
 /// The individual tiles present on a sokoban map.
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
@@ -429,6 +429,16 @@ impl Index<(usize, usize)> for State {
     }
 }
 
+impl IndexMut<(usize, usize)> for State {
+    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
+        if let Some(index) = self.checked_bounds(index) {
+            &mut self.container[index]
+        } else {
+            panic!("Index out of bounds: {index:?}")
+        }
+    }
+}
+
 impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_char('\n')?;
@@ -508,17 +518,6 @@ impl<'a> StateIteratorItem<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ops::IndexMut;
-
-    impl IndexMut<(usize, usize)> for State {
-        fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
-            if let Some(index) = self.checked_bounds(index) {
-                &mut self.container[index]
-            } else {
-                panic!("Index out of bounds: {index:?}")
-            }
-        }
-    }
 
     fn generate_basic() -> State {
         let rows = 5;
