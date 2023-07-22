@@ -8,11 +8,13 @@ pub mod error;
 
 use crate::error::{SokobanError, SokobanResult};
 use std::fmt::{Debug, Formatter, Write};
+use std::hash::{Hash, Hasher};
 use std::io::BufRead;
+use std::iter::Enumerate;
 use std::ops::Index;
 
 /// The individual tiles present on a sokoban map.
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Tile {
@@ -59,7 +61,7 @@ impl TryFrom<char> for Tile {
 }
 
 /// A direction in which a player can move or move a crate.
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Direction {
@@ -141,7 +143,7 @@ impl State {
     ///
     /// The vector of tiles must be laid out such that the rows are contiguous. For each index `i`
     /// in the vector, with `r` as the number of rows and `c` as the number of columns, the current
-    /// position of the map is `(i / r, i % c)`.
+    /// position of the map is `(i / c, i % c)`.
     ///
     /// # Errors
     ///
@@ -295,6 +297,15 @@ impl State {
         })
     }
 
+    /// Iterator over the state in row-major order.
+    #[must_use]
+    pub fn iter(&self) -> StateIterator {
+        StateIterator {
+            state: self,
+            inner: self.container.iter().enumerate(),
+        }
+    }
+
     /// The number of moves since the starting state of this state.
     #[must_use]
     pub fn moves(&self) -> usize {
@@ -442,6 +453,55 @@ impl Debug for State {
             f.write_char('\n')?;
         }
         Ok(())
+    }
+}
+
+impl Hash for State {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.targets.hash(state);
+        self.dim_r.hash(state);
+        self.dim_c.hash(state);
+        self.container.hash(state);
+        self.player.hash(state);
+    }
+}
+
+/// Iterator over the map of the puzzle.
+pub struct StateIterator<'a> {
+    state: &'a State,
+    inner: Enumerate<core::slice::Iter<'a, Tile>>,
+}
+
+impl<'a> Iterator for StateIterator<'a> {
+    type Item = StateIteratorItem<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(index, &tile)| StateIteratorItem {
+            state: self.state,
+            index,
+            tile,
+        })
+    }
+}
+
+/// An individual position in the state, as returned by a [`StateIterator`].
+pub struct StateIteratorItem<'a> {
+    state: &'a State,
+    index: usize,
+    tile: Tile,
+}
+
+impl<'a> StateIteratorItem<'a> {
+    /// The tile at this position.
+    #[must_use]
+    pub fn tile(&self) -> Tile {
+        self.tile
+    }
+
+    /// The position of this tile.
+    #[must_use]
+    pub fn position(&self) -> (usize, usize) {
+        (self.index / self.state.dim_c, self.index % self.state.dim_c)
     }
 }
 
