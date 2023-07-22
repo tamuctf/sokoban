@@ -1,3 +1,9 @@
+//! `sokoban`, a general purpose crate for verifying sokoban puzzle states and solutions.
+
+#![deny(clippy::all)]
+#![deny(clippy::pedantic)]
+#![deny(missing_docs)]
+
 pub mod error;
 
 use crate::error::{SokobanError, SokobanResult};
@@ -5,54 +11,92 @@ use std::fmt::{Debug, Formatter, Write};
 use std::io::BufRead;
 use std::ops::Index;
 
+/// The individual tiles present on a sokoban map.
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
-pub enum Block {
+pub enum Tile {
+    /// A crate tile represents a movable "crate" to be pushed by the player into the designated
+    /// target positions.
+    ///
+    /// Crate tiles that are not located in target positions are denoted with
+    /// `m` and crate tiles that are located in target positions are denoted with `M`.
     Crate,
+    /// A floor tile represents a space in which players and crates may move or be moved.
+    ///
+    /// A floor tile is denoted with `_`. Floor tiles containing a target position are denoted with
+    /// `.`. Floor tiles on which a player is currently located is denoted with `x`. Finally, a
+    /// floor tile which contains both a player and a target position is denoted with `X`.
     Floor,
+    /// A wall tile represents an inaccessible position into which neither players nor crates may
+    /// move or be moved.
+    ///
+    /// A wall tile is denoted with `#`.
     Wall,
 }
 
-impl Debug for Block {
+impl Debug for Tile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Block::Crate => f.write_char('m'),
-            Block::Floor => f.write_char('_'),
-            Block::Wall => f.write_char('#'),
+            Tile::Crate => f.write_char('m'),
+            Tile::Floor => f.write_char('_'),
+            Tile::Wall => f.write_char('#'),
         }
     }
 }
 
-impl TryFrom<char> for Block {
+impl TryFrom<char> for Tile {
     type Error = char;
 
     fn try_from(value: char) -> Result<Self, Self::Error> {
         match value {
-            'm' => Ok(Block::Crate),
-            '_' => Ok(Block::Floor),
-            '#' => Ok(Block::Wall),
+            'm' => Ok(Tile::Crate),
+            '_' => Ok(Tile::Floor),
+            '#' => Ok(Tile::Wall),
             c => Err(c),
         }
     }
 }
 
+/// A direction in which a player can move or move a crate.
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
 pub enum Direction {
+    /// The direction in which a move subtracts from the row index.
     Up,
+    /// The direction in which a move adds to the row index.
     Down,
+    /// The direction in which a move subtracts from the column index.
     Left,
+    /// The direction in which a move adds to the column index.
     Right,
 }
 
 impl Direction {
-    pub fn go(&self, orig: (usize, usize)) -> (usize, usize) {
-        match self {
-            Direction::Up => (orig.0.wrapping_sub(1), orig.1),
-            Direction::Down => (orig.0 + 1, orig.1),
-            Direction::Left => (orig.0, orig.1.wrapping_sub(1)),
-            Direction::Right => (orig.0, orig.1 + 1),
-        }
+    /// Indicates the position to which a player would move if starting in the provided position.
+    ///
+    /// This method returns `None` if the next position cannot be computed, such as in the case of
+    /// integer under- or over-flow.
+    #[must_use]
+    pub fn go(&self, orig: (usize, usize)) -> Option<(usize, usize)> {
+        let pos = match self {
+            Direction::Up => {
+                let Some(r) = orig.0.checked_sub(1) else { return None; };
+                (r, orig.1)
+            }
+            Direction::Down => {
+                let Some(r) = orig.0.checked_add(1) else { return None; };
+                (r, orig.1)
+            }
+            Direction::Left => {
+                let Some(c) = orig.1.checked_sub(1) else { return None; };
+                (orig.0, c)
+            }
+            Direction::Right => {
+                let Some(c) = orig.1.checked_add(1) else { return None; };
+                (orig.0, c)
+            }
+        };
+        Some(pos)
     }
 }
 
@@ -67,9 +111,11 @@ impl Debug for Direction {
     }
 }
 
+/// The state of the sokoban puzzle, including the map, player position, the targets of the puzzle,
+/// and the number of moves so far.
 #[derive(Clone, Eq, PartialEq)]
 pub struct State {
-    container: Vec<Block>,
+    container: Vec<Tile>,
     player: (usize, usize),
     targets: Vec<(usize, usize)>,
     moves: usize,
@@ -78,7 +124,6 @@ pub struct State {
 }
 
 impl State {
-    #[inline(always)]
     fn checked_bounds(&self, pos: (usize, usize)) -> Option<usize> {
         if pos.0 < self.dim_r && pos.1 < self.dim_c {
             self.dim_c
@@ -89,8 +134,22 @@ impl State {
         }
     }
 
+    /// Create a new state by providing its raw components.
+    ///
+    /// The vector of tiles must be laid out such that the rows are contiguous. For each index `i`
+    /// in the vector, with `r` as the number of rows and `c` as the number of columns, the current
+    /// position of the map is `(i / r, i % c)`.
+    ///
+    /// # Errors
+    ///
+    /// The state is invalid in the following conditions:
+    ///  - The vector's length is not `r*c`
+    ///  - The player or any of the targets are not within the bounds
+    ///  - The player or any of the targets are not on a floor tile
+    ///
+    /// See [`SokobanError`] for the relevant error variants.
     pub fn new(
-        raw: Vec<Block>,
+        raw: Vec<Tile>,
         player: (usize, usize),
         targets: Vec<(usize, usize)>,
         dim_r: usize,
@@ -119,18 +178,36 @@ impl State {
             dim_c,
         };
         let checked_player = state.checked_bounds(state.player);
-        if checked_player.is_none() || state.container[checked_player.unwrap()] != Block::Floor {
+        if let Some(checked_player) = checked_player {
+            let tile = state.container[checked_player];
+            if tile != Tile::Floor {
+                return Err(SokobanError::InvalidStartingPosition {
+                    found: Some(tile),
+                    r: player.0,
+                    c: player.1,
+                });
+            }
+        } else {
             return Err(SokobanError::InvalidStartingPosition {
-                found: checked_player.map(|pos| state.container[pos]),
+                found: None,
                 r: player.0,
                 c: player.1,
             });
         }
         for target in state.targets.iter().copied() {
             let checked_target = state.checked_bounds(target);
-            if checked_target.is_none() || state.container[checked_target.unwrap()] == Block::Wall {
+            if let Some(checked_target) = checked_target {
+                let tile = state.container[checked_target];
+                if tile == Tile::Wall {
+                    return Err(SokobanError::InvalidTargetPosition {
+                        found: Some(tile),
+                        r: target.0,
+                        c: target.1,
+                    });
+                }
+            } else {
                 return Err(SokobanError::InvalidTargetPosition {
-                    found: checked_target.map(|pos| state.container[pos]),
+                    found: None,
                     r: target.0,
                     c: target.1,
                 });
@@ -139,108 +216,162 @@ impl State {
         Ok(state)
     }
 
+    /// Determines if this state represents a solved state, i.e. all the crates have been moved to
+    /// the target position.
+    ///
+    /// A state with no targets is always in a solution state.
+    #[must_use]
     pub fn in_solution_state(&self) -> bool {
         self.targets
             .iter()
             .copied()
-            .all(|target| self[target] == Block::Crate)
+            .all(|target| self[target] == Tile::Crate)
     }
 
+    /// Consumes this state and returns a new state with the player in the specified position.
+    ///
+    /// # Errors
+    ///
+    /// This method errors in the following conditions:
+    ///  - The player would move out of bounds or into a wall
+    ///  - The player pushes a crate that would move:
+    ///     - out of bounds
+    ///     - into a wall
+    ///     - into another crate
     pub fn move_player(mut self, direction: Direction) -> SokobanResult<Self> {
         let next_pos = direction.go(self.player);
-        if let Some(npi) = self.checked_bounds(next_pos) {
-            match self.container[npi] {
-                Block::Crate => {
-                    let c_next_pos = direction.go(next_pos);
-                    let cnpi = self.checked_bounds(c_next_pos);
-                    if cnpi.is_none() || self.container[cnpi.unwrap()] != Block::Floor {
-                        return Err(SokobanError::InvalidMoveCrate {
+        if let Some(next_pos) = next_pos {
+            if let Some(npi) = self.checked_bounds(next_pos) {
+                #[allow(clippy::match_on_vec_items)]
+                match self.container[npi] {
+                    Tile::Crate => {
+                        let cnpi = direction
+                            .go(next_pos)
+                            .and_then(|c_next_pos| self.checked_bounds(c_next_pos));
+                        if let Some(cnpi) = cnpi {
+                            if self.container[cnpi] != Tile::Floor {
+                                return Err(SokobanError::InvalidMoveCrate {
+                                    last_state: self,
+                                    r: next_pos.0,
+                                    c: next_pos.1,
+                                    dir: direction,
+                                });
+                            }
+                            self.container[npi] = Tile::Floor;
+                            self.container[cnpi] = Tile::Crate;
+                        } else {
+                            return Err(SokobanError::InvalidMoveCrate {
+                                last_state: self,
+                                r: next_pos.0,
+                                c: next_pos.1,
+                                dir: direction,
+                            });
+                        }
+                    }
+                    Tile::Wall => {
+                        return Err(SokobanError::InvalidMoveWall {
                             last_state: self,
                             r: next_pos.0,
                             c: next_pos.1,
+                            dir: direction,
                         });
                     }
-                    let cnpi = cnpi.unwrap();
-                    self.container[npi] = Block::Floor;
-                    self.container[cnpi] = Block::Crate;
+                    Tile::Floor => {}
                 }
-                Block::Wall => {
-                    return Err(SokobanError::InvalidMoveWall {
-                        last_state: self,
-                        r: next_pos.0,
-                        c: next_pos.1,
-                    });
-                }
-                Block::Floor => {}
-            }
 
-            self.player = next_pos;
-            self.moves += 1;
-            Ok(self)
-        } else {
-            Err(SokobanError::InvalidMoveOOB {
-                r: self.player.0,
-                c: self.player.1,
-                last_state: self,
-                dir: direction,
-            })
+                self.player = next_pos;
+                self.moves += 1;
+                return Ok(self);
+            }
         }
+        Err(SokobanError::InvalidMoveOOB {
+            r: self.player.0,
+            c: self.player.1,
+            last_state: self,
+            dir: direction,
+        })
     }
 
+    /// The number of moves since the starting state of this state.
+    #[must_use]
     pub fn moves(&self) -> usize {
         self.moves
     }
 
+    /// The number of rows in this puzzle's map.
+    #[must_use]
     pub fn rows(&self) -> usize {
         self.dim_r
     }
 
+    /// The number of columns in this puzzle's map.
+    #[must_use]
     pub fn cols(&self) -> usize {
         self.dim_c
     }
 
+    /// The position of the player in the current state.
+    #[must_use]
     pub fn player(&self) -> (usize, usize) {
         self.player
     }
 
-    pub fn targets(&self) -> &Vec<(usize, usize)> {
+    /// The position of the targets in the current state.
+    #[must_use]
+    pub fn targets(&self) -> &[(usize, usize)] {
         &self.targets
     }
 
-    pub fn parse<R: BufRead>(reader: R) -> SokobanResult<Self> {
+    /// Parse a puzzle from the given reader. See [`Tile`] for details on the characters which
+    /// represent puzzle tiles.
+    ///
+    /// # Errors
+    ///
+    /// Parsing fails under the following conditions:
+    ///  - The number of columns in the puzzle are inconsistent
+    ///  - A character not recognised as a tile appears
+    ///  - Multiple players are on the map
+    ///  - No players are on the map
+    ///  - An IO error occurs while reading the puzzle
+    ///
+    pub fn parse<R>(reader: R) -> SokobanResult<Self>
+    where
+        R: BufRead,
+    {
         let mut col = 0;
         let mut row = 0;
-        let mut raw = Vec::new();
+        let mut map = Vec::new();
         let mut player = None;
         let mut targets = Vec::new();
-        for line in reader.lines() {
+        for (line_no, line) in reader.lines().enumerate() {
             let line = line?;
-            if line.len() == 0 {
+            if line.is_empty() {
                 continue; // lines may be blank
             }
             if col == 0 {
                 col = line.len();
             } else if col != line.len() {
                 return Err(SokobanError::InconsistentDimensions {
+                    line: line_no,
                     expected: col,
                     found: line.len(),
                 });
             }
 
-            raw.reserve(col);
+            map.reserve(col);
             for (i, c) in line.char_indices() {
-                match Block::try_from(c) {
-                    Ok(b) => raw.push(b),
+                match Tile::try_from(c) {
+                    Ok(b) => map.push(b),
                     Err('M') => {
-                        raw.push(Block::Crate);
+                        map.push(Tile::Crate);
                         targets.push((row, i));
                     }
                     Err('.') => {
-                        raw.push(Block::Floor);
+                        map.push(Tile::Floor);
                         targets.push((row, i));
                     }
-                    Err('X') | Err('x') => {
-                        raw.push(Block::Floor);
+                    Err('X' | 'x') => {
+                        map.push(Tile::Floor);
                         if let Some(player) = player {
                             return Err(SokobanError::MultiplePlayers {
                                 first: player,
@@ -255,7 +386,8 @@ impl State {
                     Err(c) => {
                         return Err(SokobanError::InvalidChar {
                             found: c,
-                            pos: (row, i),
+                            r: row,
+                            c: i,
                         })
                     }
                 }
@@ -264,7 +396,7 @@ impl State {
         }
 
         if let Some(player) = player {
-            Self::new(raw, player, targets, row, col)
+            Self::new(map, player, targets, row, col)
         } else {
             Err(SokobanError::MissingPlayer)
         }
@@ -272,14 +404,13 @@ impl State {
 }
 
 impl Index<(usize, usize)> for State {
-    type Output = Block;
+    type Output = Tile;
 
-    #[inline(always)]
     fn index(&self, index: (usize, usize)) -> &Self::Output {
         if let Some(index) = self.checked_bounds(index) {
             &self.container[index]
         } else {
-            panic!("Index out of bounds: {:?}", index)
+            panic!("Index out of bounds: {index:?}")
         }
     }
 }
@@ -288,7 +419,7 @@ impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_char('\n')?;
         for (r, chunk) in self.container.chunks(self.dim_c).enumerate() {
-            for (c, block) in chunk.iter().enumerate() {
+            for (c, tile) in chunk.iter().enumerate() {
                 if self.player == (r, c) {
                     if self.targets.contains(&(r, c)) {
                         f.write_char('X')?;
@@ -296,16 +427,16 @@ impl Debug for State {
                         f.write_char('x')?;
                     }
                 } else if self.targets.contains(&(r, c)) {
-                    if block == &Block::Crate {
+                    if tile == &Tile::Crate {
                         f.write_char('M')?;
                     } else {
                         f.write_char('.')?;
                     }
                 } else {
-                    block.fmt(f)?;
+                    tile.fmt(f)?;
                 }
             }
-            f.write_char('\n')?
+            f.write_char('\n')?;
         }
         Ok(())
     }
@@ -317,12 +448,11 @@ mod tests {
     use std::ops::IndexMut;
 
     impl IndexMut<(usize, usize)> for State {
-        #[inline(always)]
         fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
             if let Some(index) = self.checked_bounds(index) {
                 &mut self.container[index]
             } else {
-                panic!("Index out of bounds: {:?}", index)
+                panic!("Index out of bounds: {index:?}")
             }
         }
     }
@@ -330,11 +460,11 @@ mod tests {
     fn generate_basic() -> State {
         let rows = 5;
         let cols = 5;
-        let mut raw = vec![Block::Wall; rows * cols];
+        let mut raw = vec![Tile::Wall; rows * cols];
         let player = (2, 2);
-        raw[11] = Block::Floor;
-        raw[12] = Block::Floor;
-        raw[13] = Block::Floor;
+        raw[11] = Tile::Floor;
+        raw[12] = Tile::Floor;
+        raw[13] = Tile::Floor;
 
         State::new(raw, player, Vec::new(), rows, cols).unwrap()
     }
@@ -342,11 +472,11 @@ mod tests {
     fn generate_basic_with_targets() -> State {
         let rows = 5;
         let cols = 5;
-        let mut raw = vec![Block::Wall; rows * cols];
+        let mut raw = vec![Tile::Wall; rows * cols];
         let player = (2, 2);
-        raw[11] = Block::Floor;
-        raw[12] = Block::Floor;
-        raw[13] = Block::Floor;
+        raw[11] = Tile::Floor;
+        raw[12] = Tile::Floor;
+        raw[13] = Tile::Floor;
         let targets = vec![player];
 
         State::new(raw, player, targets, rows, cols).unwrap()
@@ -355,34 +485,34 @@ mod tests {
     fn generate_hallway(width: usize) -> SokobanResult<State> {
         let rows = 3;
         let cols = width;
-        let mut raw = vec![Block::Wall; rows * cols];
+        let mut raw = vec![Tile::Wall; rows * cols];
         let player = (1, width / 2 - ((width + 1) % 2));
         raw.iter_mut()
             .skip(width + 1)
             .take(width - 2)
-            .for_each(|block| *block = Block::Floor);
+            .for_each(|tile| *tile = Tile::Floor);
 
         State::new(raw, player, Vec::new(), rows, cols)
     }
 
     fn generate_hallway_with_box(width: usize) -> SokobanResult<State> {
         generate_hallway(width).map(|mut state| {
-            state[(1, (width / 2 - ((width + 1) % 2) + 1))] = Block::Crate;
+            state[(1, (width / 2 - ((width + 1) % 2) + 1))] = Tile::Crate;
             state
         })
     }
 
     fn generate_hallway_with_hole(width: usize) -> SokobanResult<State> {
         generate_hallway(width).map(|mut state| {
-            state[(1, 4)] = Block::Floor;
+            state[(1, 4)] = Tile::Floor;
             state
         })
     }
 
     fn generate_hallway_with_box_and_hole(width: usize) -> SokobanResult<State> {
         generate_hallway(width).map(|mut state| {
-            state[(1, (width / 2 - ((width + 1) % 2) + 1))] = Block::Crate;
-            state[(1, 4)] = Block::Floor;
+            state[(1, (width / 2 - ((width + 1) % 2) + 1))] = Tile::Crate;
+            state[(1, 4)] = Tile::Floor;
             state
         })
     }
@@ -390,13 +520,13 @@ mod tests {
     fn generate_room(width: usize, targets: Vec<(usize, usize)>) -> SokobanResult<State> {
         let rows = width;
         let cols = width;
-        let mut raw = vec![Block::Wall; rows * cols];
+        let mut raw = vec![Tile::Wall; rows * cols];
         let player = (width / 2 - ((width + 1) % 2), width / 2 - ((width + 1) % 2));
         for i in ((width + 1)..(raw.len() - width)).step_by(width) {
             raw.iter_mut()
                 .skip(i)
                 .take(width - 2)
-                .for_each(|block| *block = Block::Floor);
+                .for_each(|tile| *tile = Tile::Floor);
         }
 
         State::new(raw, player, targets, rows, cols)
@@ -407,7 +537,7 @@ mod tests {
             state[(
                 width / 2 - ((width + 1) % 2) - 1,
                 width / 2 - ((width + 1) % 2) + 1,
-            )] = Block::Crate;
+            )] = Tile::Crate;
             state
         })
     }
@@ -415,7 +545,7 @@ mod tests {
     #[test]
     fn basic_works() {
         let state = generate_basic();
-        let debug_string = format!("{:?}", state);
+        let debug_string = format!("{state:?}");
         assert_eq!(
             debug_string,
             r#"
@@ -431,7 +561,7 @@ mod tests {
     #[test]
     fn basic_on_target_works() {
         let state = generate_basic_with_targets();
-        let debug_string = format!("{:?}", state);
+        let debug_string = format!("{state:?}");
         assert_eq!(
             debug_string,
             r#"
@@ -446,9 +576,9 @@ mod tests {
 
     #[test]
     fn basic_invalid_wall_doesnt_work() {
-        let state = State::new(vec![Block::Wall], (0, 0), Vec::new(), 1, 1);
+        let state = State::new(vec![Tile::Wall], (0, 0), Vec::new(), 1, 1);
         if let SokobanError::InvalidStartingPosition { found, r, c } = state.unwrap_err() {
-            assert_eq!(found, Some(Block::Wall));
+            assert_eq!(found, Some(Tile::Wall));
             assert_eq!(r, 0);
             assert_eq!(c, 0);
         } else {
@@ -458,9 +588,9 @@ mod tests {
 
     #[test]
     fn basic_invalid_crate_doesnt_work() {
-        let state = State::new(vec![Block::Crate], (0, 0), Vec::new(), 1, 1);
+        let state = State::new(vec![Tile::Crate], (0, 0), Vec::new(), 1, 1);
         if let SokobanError::InvalidStartingPosition { found, r, c } = state.unwrap_err() {
-            assert_eq!(found, Some(Block::Crate));
+            assert_eq!(found, Some(Tile::Crate));
             assert_eq!(r, 0);
             assert_eq!(c, 0);
         } else {
@@ -470,7 +600,7 @@ mod tests {
 
     #[test]
     fn basic_invalid_oob_doesnt_work() {
-        let state = State::new(vec![Block::Wall], (0, 1), Vec::new(), 1, 1);
+        let state = State::new(vec![Tile::Wall], (0, 1), Vec::new(), 1, 1);
         if let SokobanError::InvalidStartingPosition { found, r, c } = state.unwrap_err() {
             assert_eq!(found, None);
             assert_eq!(r, 0);
@@ -483,19 +613,19 @@ mod tests {
     #[test]
     fn invalid_target_wall_doesnt_work() {
         let raw = vec![
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Floor,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Floor,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         if let SokobanError::InvalidTargetPosition { found, r, c } = state.unwrap_err() {
-            assert_eq!(found, Some(Block::Wall));
+            assert_eq!(found, Some(Tile::Wall));
             assert_eq!(r, 0);
             assert_eq!(c, 0);
         } else {
@@ -506,15 +636,15 @@ mod tests {
     #[test]
     fn valid_target_crate_does_work() {
         let raw = vec![
-            Block::Crate,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Floor,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
+            Tile::Crate,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Floor,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         assert!(state.is_ok());
@@ -522,7 +652,7 @@ mod tests {
 
     #[test]
     fn basic_invalid_target_oob_doesnt_work() {
-        let state = State::new(vec![Block::Floor], (0, 0), vec![(0, 1)], 1, 1);
+        let state = State::new(vec![Tile::Floor], (0, 0), vec![(0, 1)], 1, 1);
         if let SokobanError::InvalidTargetPosition { found, r, c } = state.unwrap_err() {
             assert_eq!(found, None);
             assert_eq!(r, 0);
@@ -535,15 +665,15 @@ mod tests {
     #[test]
     fn basic_solution_state_works() {
         let raw = vec![
-            Block::Crate,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Floor,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
+            Tile::Crate,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Floor,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(0, 0)], 3, 3);
         assert!(state.is_ok());
@@ -553,15 +683,15 @@ mod tests {
     #[test]
     fn basic_not_solution_state_works() {
         let raw = vec![
-            Block::Crate,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Floor,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
-            Block::Wall,
+            Tile::Crate,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Floor,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
+            Tile::Wall,
         ];
         let state = State::new(raw, (1, 1), vec![(1, 1)], 3, 3);
         assert!(state.is_ok());
@@ -658,10 +788,17 @@ mod tests {
             .fold(generate_hallway(5), |state, _| {
                 state.and_then(|state| state.move_player(Direction::Right))
             });
-        if let SokobanError::InvalidMoveWall { last_state, r, c } = last.unwrap_err() {
+        if let SokobanError::InvalidMoveWall {
+            last_state,
+            r,
+            c,
+            dir,
+        } = last.unwrap_err()
+        {
             assert_eq!(last_state.moves(), 1);
             assert_eq!(r, 1);
             assert_eq!(c, 4);
+            assert_eq!(dir, Direction::Right);
         } else {
             panic!("Unexpected failure condition; invalid error.")
         }
@@ -674,10 +811,17 @@ mod tests {
             .fold(generate_hallway_with_box(5), |state, _| {
                 state.and_then(|state| state.move_player(Direction::Right))
             });
-        if let SokobanError::InvalidMoveCrate { last_state, r, c } = last.unwrap_err() {
+        if let SokobanError::InvalidMoveCrate {
+            last_state,
+            r,
+            c,
+            dir,
+        } = last.unwrap_err()
+        {
             assert_eq!(last_state.moves(), 0);
             assert_eq!(r, 1);
             assert_eq!(c, 3);
+            assert_eq!(dir, Direction::Right);
         } else {
             panic!("Unexpected failure condition; invalid error.")
         }
@@ -692,15 +836,15 @@ mod tests {
             });
         if let SokobanError::InvalidMoveOOB {
             last_state,
-            dir,
             r,
             c,
+            dir,
         } = last.unwrap_err()
         {
             assert_eq!(last_state.moves(), 2);
-            assert_eq!(dir, Direction::Right);
             assert_eq!(r, 1);
             assert_eq!(c, 4);
+            assert_eq!(dir, Direction::Right);
         } else {
             panic!("Unexpected failure condition; invalid error.")
         }
@@ -713,10 +857,17 @@ mod tests {
             .fold(generate_hallway_with_box_and_hole(5), |state, _| {
                 state.and_then(|state| state.move_player(Direction::Right))
             });
-        if let SokobanError::InvalidMoveCrate { last_state, r, c } = last.unwrap_err() {
+        if let SokobanError::InvalidMoveCrate {
+            last_state,
+            r,
+            c,
+            dir,
+        } = last.unwrap_err()
+        {
             assert_eq!(last_state.moves(), 1);
             assert_eq!(r, 1);
             assert_eq!(c, 4);
+            assert_eq!(dir, Direction::Right);
         } else {
             panic!("Unexpected failure condition; invalid error.")
         }
