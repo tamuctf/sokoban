@@ -14,6 +14,7 @@ use std::ops::Index;
 /// The individual tiles present on a sokoban map.
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Tile {
     /// A crate tile represents a movable "crate" to be pushed by the player into the designated
     /// target positions.
@@ -60,6 +61,7 @@ impl TryFrom<char> for Tile {
 /// A direction in which a player can move or move a crate.
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "fuzzing", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Direction {
     /// The direction in which a move subtracts from the row index.
     Up,
@@ -114,6 +116,7 @@ impl Debug for Direction {
 /// The state of the sokoban puzzle, including the map, player position, the targets of the puzzle,
 /// and the number of moves so far.
 #[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct State {
     container: Vec<Tile>,
     player: (usize, usize),

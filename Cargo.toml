@@ -1,6 +1,6 @@
 [package]
 name = "sokoban"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A general-purpose sokoban solution verifier."
 license = "MIT OR Apache-2.0"
@@ -9,9 +9,11 @@ repository = "https://github.com/tamuctf/sokoban.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 fuzzing = ["arbitrary"]
+serde = ["dep:serde"]
 
 [dependencies]
 arbitrary = { version = "1", optional = true, features = ["derive_arbitrary"] }
+serde = { version = "1.0", optional = true, features = ["derive"] }
 thiserror = "1"
 
 [dev-dependencies]
